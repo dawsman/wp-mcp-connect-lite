@@ -1,0 +1,97 @@
+// =============================================================================
+// Charts — Recharts tooltip/axis overrides
+// =============================================================================
+@use 'tokens' as *;
+
+.wp-mcp-connect-admin {
+    // Recharts tooltip
+    .recharts-tooltip-wrapper {
+        outline: none;
+    }
+
+    .chart-tooltip {
+        background: $gray-800;
+        border-radius: $radius;
+        padding: $space-3 $space-4;
+        box-shadow: $shadow-md;
+        border: none;
+
+        &__label {
+            font-size: $text-sm;
+            font-weight: $font-semibold;
+            color: #fff;
+            margin-bottom: $space-2;
+        }
+
+        &__row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: $space-4;
+            padding: 2px 0;
+        }
+
+        &__name {
+            display: flex;
+            align-items: center;
+            gap: $space-2;
+            font-size: $text-sm;
+            color: $gray-300;
+        }
+
+        &__dot {
+            width: 8px;
+            height: 8px;
+            border-radius: $radius-full;
+        }
+
+        &__value {
+            font-size: $text-sm;
+            font-weight: $font-semibold;
+            color: #fff;
+        }
+    }
+
+    // Chart container
+    .chart-container {
+        width: 100%;
+        position: relative;
+
+        &--sm { height: 200px; }
+        &--md { height: 300px; }
+        &--lg { height: 400px; }
+    }
+
+    // Recharts axis overrides
+    .recharts-cartesian-axis-tick-value {
+        fill: $gray-500;
+        font-size: $text-xs;
+    }
+
+    .recharts-cartesian-grid-horizontal line,
+    .recharts-cartesian-grid-vertical line {
+        stroke: $gray-200;
+    }
+
+    .recharts-legend-item-text {
+        color: $gray-600 !important;
+        font-size: $text-sm;
+    }
+
+    // Donut center label
+    .donut-center {
+        text-anchor: middle;
+        dominant-baseline: central;
+
+        &__value {
+            font-size: $text-3xl;
+            font-weight: $font-bold;
+            fill: $gray-900;
+        }
+
+        &__label {
+            font-size: $text-sm;
+            fill: $gray-500;
+        }
+    }
+}

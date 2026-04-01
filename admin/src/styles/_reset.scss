@@ -1,0 +1,45 @@
+// =============================================================================
+// Reset — Normalize WP admin defaults within our container
+// =============================================================================
+@use 'tokens' as *;
+
+.wp-mcp-connect-admin {
+    font-family: $font-sans;
+    font-size: $text-base;
+    line-height: $leading-normal;
+    color: $gray-800;
+    -webkit-font-smoothing: antialiased;
+
+    *,
+    *::before,
+    *::after {
+        box-sizing: border-box;
+    }
+
+    a {
+        color: $primary-600;
+        text-decoration: none;
+
+        &:hover {
+            color: $primary-700;
+        }
+    }
+
+    button {
+        font-family: inherit;
+    }
+
+    table {
+        border-collapse: collapse;
+        border-spacing: 0;
+    }
+
+    img {
+        max-width: 100%;
+        height: auto;
+    }
+
+    p {
+        margin: 0 0 $space-4;
+    }
+}

@@ -1,0 +1,69 @@
+// =============================================================================
+// Layout — Grid system and responsive utilities
+// =============================================================================
+@use 'tokens' as *;
+
+.wp-mcp-connect-admin {
+    max-width: 1280px;
+    margin: $space-5 $space-5 $space-5 0;
+
+    .grid {
+        display: grid;
+        gap: $space-5;
+    }
+
+    .grid-cols-2 { grid-template-columns: repeat(2, 1fr); }
+    .grid-cols-3 { grid-template-columns: repeat(3, 1fr); }
+    .grid-cols-4 { grid-template-columns: repeat(4, 1fr); }
+
+    .grid-auto {
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    }
+
+    .flex {
+        display: flex;
+    }
+
+    .flex-col {
+        flex-direction: column;
+    }
+
+    .flex-wrap {
+        flex-wrap: wrap;
+    }
+
+    .items-center {
+        align-items: center;
+    }
+
+    .justify-between {
+        justify-content: space-between;
+    }
+
+    .justify-end {
+        justify-content: flex-end;
+    }
+
+    .gap-1 { gap: $space-1; }
+    .gap-2 { gap: $space-2; }
+    .gap-3 { gap: $space-3; }
+    .gap-4 { gap: $space-4; }
+    .gap-5 { gap: $space-5; }
+    .gap-6 { gap: $space-6; }
+
+    @media (max-width: $bp-md) {
+        .grid-cols-2,
+        .grid-cols-3,
+        .grid-cols-4 {
+            grid-template-columns: repeat(2, 1fr);
+        }
+    }
+
+    @media (max-width: $bp-sm) {
+        .grid-cols-2,
+        .grid-cols-3,
+        .grid-cols-4 {
+            grid-template-columns: 1fr;
+        }
+    }
+}
