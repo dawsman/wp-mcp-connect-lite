@@ -123,7 +123,7 @@ class WP_MCP_Connect_Rules {
 			case 'orphan_pages_exist':
 				global $wpdb;
 				$table = $wpdb->prefix . 'cwp_internal_links';
-				if ( $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" ) !== $table ) {
+				if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) ) !== $table ) {
 					return false;
 				}
 				$post_types   = get_post_types( array( 'public' => true ), 'names' );

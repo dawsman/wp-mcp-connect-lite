@@ -210,15 +210,24 @@ class WP_MCP_Connect_GSC_Auth {
 	 */
 	public function get_status() {
 		$has_credentials = $this->has_credentials();
-		$is_connected = $this->is_connected();
-		$has_site = ! empty( get_option( 'cwp_gsc_site_url', '' ) );
+		$is_connected    = $this->is_connected();
+		$has_site        = ! empty( get_option( 'cwp_gsc_site_url', '' ) );
 
-		$status = 'disconnected';
+		$status  = 'disconnected';
 		$message = null;
 
+		// Distinguish "no refresh token stored" (never connected / disconnected)
+		// from "a ciphertext is stored but we can't decrypt it" (WordPress salts
+		// were rotated). Both currently cause is_connected() to return false,
+		// but the user-facing resolution differs: reconnect flows for the
+		// first case, explain key rotation for the second.
+		$refresh_status = $this->token_storage_status( 'cwp_gsc_refresh_token' );
 		if ( ! $has_credentials ) {
-			$status = 'needs_credentials';
+			$status  = 'needs_credentials';
 			$message = 'OAuth credentials not configured. Add CWP_GSC_CLIENT_ID and CWP_GSC_CLIENT_SECRET constants to wp-config.php.';
+		} elseif ( 'corrupted' === $refresh_status ) {
+			$status  = 'needs_reauth_key_rotation';
+			$message = 'Stored OAuth tokens cannot be decrypted — WordPress security keys may have been rotated, or the encryption algorithm was upgraded. Please reconnect.';
 		} elseif ( $has_credentials && $is_connected && $has_site ) {
 			$status = 'connected';
 		} elseif ( $has_credentials && $is_connected ) {
@@ -240,6 +249,20 @@ class WP_MCP_Connect_GSC_Auth {
 		}
 
 		return rest_ensure_response( $response );
+	}
+
+	/**
+	 * Classify the state of a stored encrypted token option.
+	 *
+	 * @param string $option_name Option name holding a ciphertext.
+	 * @return string One of 'missing', 'valid', 'corrupted'.
+	 */
+	private function token_storage_status( $option_name ) {
+		$stored = (string) get_option( $option_name, '' );
+		if ( '' === $stored ) {
+			return 'missing';
+		}
+		return '' !== $this->decrypt_token( $stored ) ? 'valid' : 'corrupted';
 	}
 
 	/**
@@ -344,20 +367,32 @@ class WP_MCP_Connect_GSC_Auth {
 		$code = sanitize_text_field( $request->get_param( 'code' ) );
 		$state = sanitize_text_field( $request->get_param( 'state' ) );
 
-		// Extract user_id from the state parameter.
-		$state_parts = explode( '|', $state );
-		$state_user_id = isset( $state_parts[1] ) ? absint( $state_parts[1] ) : 0;
-		if ( ! $state_user_id ) {
+		// The transient that stored the state at auth-initiation time was keyed
+		// on the initiating user; look it up via the current session user, not
+		// the user_id embedded in the attacker-visible state parameter. The
+		// embedded user_id is only used as a sanity cross-check below.
+		$current_user_id = get_current_user_id();
+		if ( ! $current_user_id ) {
 			return new WP_Error(
 				'invalid_state',
-				'Invalid OAuth state format. Please try again.',
+				'OAuth callback must be made by the authenticated initiating user.',
+				array( 'status' => 401 )
+			);
+		}
+
+		$state_parts            = explode( '|', $state );
+		$embedded_user_id       = isset( $state_parts[1] ) ? absint( $state_parts[1] ) : 0;
+		if ( ! $embedded_user_id || $embedded_user_id !== $current_user_id ) {
+			return new WP_Error(
+				'invalid_state',
+				'OAuth state was generated for a different user session. Please start the connection process again.',
 				array( 'status' => 400 )
 			);
 		}
 
-		// Verify state using user-scoped transient.
-		$stored_state = get_transient( 'cwp_gsc_oauth_state_' . $state_user_id );
-		if ( ! $stored_state || $state !== $stored_state ) {
+		$stored_state = get_transient( 'cwp_gsc_oauth_state_' . $current_user_id );
+		if ( ! is_string( $stored_state ) ||
+			! hash_equals( (string) $stored_state, (string) $state ) ) {
 			return new WP_Error(
 				'invalid_state',
 				'Invalid OAuth state. Please try again.',
@@ -365,7 +400,7 @@ class WP_MCP_Connect_GSC_Auth {
 			);
 		}
 
-		delete_transient( 'cwp_gsc_oauth_state_' . $state_user_id );
+		delete_transient( 'cwp_gsc_oauth_state_' . $current_user_id );
 
 		// Exchange code for tokens.
 		$tokens = $this->exchange_code_for_tokens( $code );
@@ -625,6 +660,41 @@ class WP_MCP_Connect_GSC_Auth {
 	public function set_site( $request ) {
 		$site_url = sanitize_text_field( $request->get_param( 'site_url' ) );
 
+		// Verify the submitted site is actually in the authorized Search
+		// Console properties for the connected Google account. Stops an admin
+		// from pointing the sync at a property they don't own, and guards
+		// against any downstream code that might trust the value as "a site
+		// the current Google account can see".
+		$access_token = $this->get_access_token();
+		if ( $access_token ) {
+			$api_response = wp_remote_get(
+				'https://www.googleapis.com/webmasters/v3/sites',
+				array(
+					'headers' => array( 'Authorization' => 'Bearer ' . $access_token ),
+					'timeout' => 10,
+				)
+			);
+			if ( ! is_wp_error( $api_response ) &&
+				200 === wp_remote_retrieve_response_code( $api_response ) ) {
+				$body       = json_decode( wp_remote_retrieve_body( $api_response ), true );
+				$authorized = array();
+				if ( is_array( $body ) && ! empty( $body['siteEntry'] ) ) {
+					foreach ( $body['siteEntry'] as $entry ) {
+						if ( ! empty( $entry['siteUrl'] ) ) {
+							$authorized[] = $entry['siteUrl'];
+						}
+					}
+				}
+				if ( ! in_array( $site_url, $authorized, true ) ) {
+					return new WP_Error(
+						'unauthorized_site',
+						__( 'Selected site is not in your authorized Search Console properties.', 'wp-mcp-connect' ),
+						array( 'status' => 400 )
+					);
+				}
+			}
+		}
+
 		update_option( 'cwp_gsc_site_url', $site_url );
 
 		return rest_ensure_response( array(
@@ -700,10 +770,17 @@ class WP_MCP_Connect_GSC_Auth {
 			return '';
 		}
 
-		$iv = openssl_random_pseudo_bytes( 16 );
-		$encrypted = openssl_encrypt( $token, 'AES-256-CBC', $key, 0, $iv );
+		// AES-256-GCM: 12-byte nonce, 16-byte authentication tag.
+		// Storage format: base64( nonce | tag | ciphertext ).
+		$iv        = random_bytes( 12 );
+		$tag       = '';
+		$encrypted = openssl_encrypt( $token, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag, '', 16 );
 
-		return base64_encode( $iv . $encrypted );
+		if ( false === $encrypted ) {
+			return '';
+		}
+
+		return base64_encode( $iv . $tag . $encrypted );
 	}
 
 	/**
@@ -723,18 +800,18 @@ class WP_MCP_Connect_GSC_Auth {
 			return '';
 		}
 
-		$data = base64_decode( $encrypted );
-
-		if ( strlen( $data ) < 16 ) {
+		$data = base64_decode( $encrypted, true );
+		if ( false === $data || strlen( $data ) < 28 ) {
 			return '';
 		}
 
-		$iv = substr( $data, 0, 16 );
-		$encrypted_data = substr( $data, 16 );
+		$iv             = substr( $data, 0, 12 );
+		$tag            = substr( $data, 12, 16 );
+		$encrypted_data = substr( $data, 28 );
 
-		$decrypted = openssl_decrypt( $encrypted_data, 'AES-256-CBC', $key, 0, $iv );
+		$decrypted = openssl_decrypt( $encrypted_data, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag );
 
-		return $decrypted ?: '';
+		return ( false !== $decrypted ) ? $decrypted : '';
 	}
 
 	/**
@@ -761,18 +838,12 @@ class WP_MCP_Connect_GSC_Auth {
 			);
 		}
 
-		// Use HKDF (Hash-based Key Derivation Function) for proper key derivation.
-		// This provides domain separation via the context string.
-		$ikm = $auth_key . $secure_auth_key;
+		// Use HKDF for proper key derivation with domain separation via the
+		// context string. Plugin requires PHP 7.4+, and hash_hkdf has been
+		// available since PHP 7.1.2 — always present.
+		$ikm     = $auth_key . $secure_auth_key;
 		$context = 'cwp_gsc_token_encryption_v1';
 
-		// PHP 7.1.2+ has hash_hkdf, fall back to manual HKDF for older versions.
-		if ( function_exists( 'hash_hkdf' ) ) {
-			return hash_hkdf( 'sha256', $ikm, 32, $context );
-		}
-
-		// Manual HKDF implementation for PHP < 7.1.2.
-		$prk = hash_hmac( 'sha256', $ikm, '', true );
-		return substr( hash_hmac( 'sha256', $context . chr( 1 ), $prk, true ), 0, 32 );
+		return hash_hkdf( 'sha256', $ikm, 32, $context );
 	}
 }

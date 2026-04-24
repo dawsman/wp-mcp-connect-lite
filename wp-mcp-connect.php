@@ -1,11 +1,11 @@
 <?php
 /**
- * Plugin Name:       WP MCP Connect
- * Plugin URI:        https://example.com/wp-mcp-connect
- * Description:       A WordPress plugin to expose enhanced API endpoints for MCP clients, enabling SEO management, content editing, and redirections.
+ * Plugin Name:       WP MCP Connect Lite
+ * Plugin URI:        https://ftw.digital
+ * Description:       Headless REST API plugin for MCP clients — SEO management, content editing, redirections, and more. Lite version (no admin dashboard).
  * Version:           1.0.0
- * Author:            Your Name
- * Author URI:        https://example.com
+ * Author:            ftw.digital
+ * Author URI:        https://ftw.digital
  * License:           GPL-2.0+
  * License URI:       http://www.gnu.org/licenses/gpl-2.0.txt
  * Text Domain:       wp-mcp-connect
@@ -26,6 +26,7 @@ define( 'WP_MCP_CONNECT_MIN_PHP_VERSION', '7.4' );
 define( 'WP_MCP_CONNECT_PATH', plugin_dir_path( __FILE__ ) );
 define( 'WP_MCP_CONNECT_URL', plugin_dir_url( __FILE__ ) );
 define( 'WP_MCP_CONNECT_BASENAME', plugin_basename( __FILE__ ) );
+define( 'WP_MCP_CONNECT_UPDATE_URL', 'https://raw.githubusercontent.com/dawsman/wp-mcp-connect-lite/main/update-info.json' );
 
 /**
  * Check PHP version compatibility.
@@ -135,3 +136,18 @@ function run_wp_mcp_connect() {
 	$plugin->run();
 }
 run_wp_mcp_connect();
+
+/**
+ * Initialize the self-hosted updater (admin only).
+ *
+ * @since 1.1.0
+ */
+if ( is_admin() ) {
+	require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-updater.php';
+	new WP_MCP_Connect_Updater(
+		WP_MCP_CONNECT_BASENAME,
+		WP_MCP_CONNECT_VERSION,
+		'wp-mcp-connect',
+		WP_MCP_CONNECT_UPDATE_URL
+	);
+}

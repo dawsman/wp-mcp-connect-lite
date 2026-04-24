@@ -666,11 +666,17 @@ class WP_MCP_Connect_API {
 	public function health_check() {
 		global $wpdb;
 		$db_ok = (bool) $wpdb->get_var( 'SELECT 1' );
-		return rest_ensure_response( array(
+		$response = array(
 			'status'    => $db_ok ? 'ok' : 'degraded',
-			'version'   => $this->version,
 			'timestamp' => gmdate( 'c' ),
-		) );
+		);
+		// Only disclose the plugin version to authenticated users. The route
+		// itself is unauthenticated for liveness probes, and a bare version
+		// string in the public response is gratuitous fingerprinting fuel.
+		if ( is_user_logged_in() ) {
+			$response['version'] = $this->version;
+		}
+		return rest_ensure_response( $response );
 	}
 
 	/**
@@ -787,6 +793,13 @@ class WP_MCP_Connect_API {
 	 */
 	public function insert_link( $request ) {
 		$post_id = (int) $request->get_param( 'post_id' );
+		if ( ! current_user_can( 'edit_post', $post_id ) ) {
+			return new WP_Error(
+				'forbidden',
+				__( 'You do not have permission to edit this post.', 'wp-mcp-connect' ),
+				array( 'status' => 403 )
+			);
+		}
 		$anchor = sanitize_text_field( $request->get_param( 'anchor_text' ) );
 		$url = esc_url_raw( $request->get_param( 'target_url' ) );
 		$result = WP_MCP_Connect_Link_Suggest::insert_link( $post_id, $anchor, $url );

@@ -105,10 +105,20 @@ class WP_MCP_Connect_Reports {
 		$summary = $this->build_summary();
 		$body = $this->format_report_body( $summary );
 
-		$recipients = get_option( 'cwp_reports_recipients', '' );
-		if ( empty( $recipients ) ) {
-			$recipients = get_option( 'admin_email' );
+		// Split stored recipients on comma, validate each, drop anything that
+		// isn't a well-formed email. This also strips any CR/LF that might have
+		// reached the option via a path that didn't sanitise, preventing
+		// mail-header injection in the To: header.
+		$stored     = (string) get_option( 'cwp_reports_recipients', '' );
+		$candidates = array_filter( array_map( 'trim', explode( ',', $stored ) ) );
+		$valid      = array();
+		foreach ( $candidates as $candidate ) {
+			$clean = sanitize_email( $candidate );
+			if ( '' !== $clean && is_email( $clean ) ) {
+				$valid[] = $clean;
+			}
 		}
+		$recipients = ! empty( $valid ) ? implode( ',', $valid ) : get_option( 'admin_email' );
 
 		$sent = false;
 		if ( $send ) {

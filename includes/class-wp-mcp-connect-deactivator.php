@@ -37,6 +37,7 @@ class WP_MCP_Connect_Deactivator {
 			$admin_role->remove_cap( 'manage_cwp_redirects' );
 		}
 
+		delete_transient( 'wp_mcp_connect_updater_data' );
 		flush_rewrite_rules();
 	}
 }

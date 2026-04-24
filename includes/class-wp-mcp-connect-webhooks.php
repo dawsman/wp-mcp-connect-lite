@@ -40,6 +40,12 @@ class WP_MCP_Connect_Webhooks {
 	public function __construct( $plugin_name, $version ) {
 		$this->plugin_name = $plugin_name;
 		$this->version     = $version;
+
+		// Register once: the filter short-circuits only requests we flagged
+		// via the `cwp_ssrf_guard` arg, so it never touches unrelated traffic.
+		if ( ! has_filter( 'pre_http_request', array( __CLASS__, 'pre_http_ssrf_guard' ) ) ) {
+			add_filter( 'pre_http_request', array( __CLASS__, 'pre_http_ssrf_guard' ), 10, 3 );
+		}
 	}
 
 	/**
@@ -62,15 +68,11 @@ class WP_MCP_Connect_Webhooks {
 			'data'      => $data,
 		);
 
-		$secret = '';
-		if ( defined( 'AUTH_KEY' ) && ! empty( AUTH_KEY ) && AUTH_KEY !== 'put your unique phrase here' ) {
-			$secret = AUTH_KEY;
-		} else {
-			$secret = get_option( 'cwp_webhook_secret', '' );
-			if ( empty( $secret ) ) {
-				$secret = wp_generate_password( 32, true, true );
-				update_option( 'cwp_webhook_secret', $secret, false );
-			}
+		$secret = self::get_signing_secret();
+		if ( '' === $secret ) {
+			// Without a signing key we cannot guarantee webhook authenticity.
+			// Refuse to dispatch rather than sending unsigned events.
+			return;
 		}
 		$body      = wp_json_encode( $payload );
 		$signature = hash_hmac( 'sha256', $body, $secret );
@@ -80,17 +82,175 @@ class WP_MCP_Connect_Webhooks {
 				continue;
 			}
 
-			wp_remote_post( $webhook['url'], array(
+			$url = isset( $webhook['url'] ) ? (string) $webhook['url'] : '';
+			if ( ! self::is_safe_webhook_url( $url ) ) {
+				// Defence-in-depth: refuse to dispatch to an address that would
+				// have been blocked at registration time. A URL that was valid
+				// when stored could become unsafe later (DNS change, admin of a
+				// newer plugin rewriting the option, etc.).
+				continue;
+			}
+
+			wp_remote_post( $url, array(
 				'body'    => $body,
 				'headers' => array(
 					'Content-Type'    => 'application/json',
 					'X-CWP-Signature' => $signature,
 					'X-CWP-Event'     => $event,
 				),
-				'timeout'  => 5,
-				'blocking' => false,
+				'timeout'        => 5,
+				'blocking'       => false,
+				// Flag for pre_http_ssrf_guard: re-resolve at transport time to
+				// close (but not eliminate) the DNS-rebinding window between
+				// is_safe_webhook_url() and the actual socket connect.
+				'cwp_ssrf_guard' => true,
 			) );
 		}
+	}
+
+	/**
+	 * Last-chance SSRF guard fired from inside WP's HTTP API.
+	 *
+	 * Applies only to requests that opted in via the `cwp_ssrf_guard` arg so
+	 * legitimate outbound traffic from other plugin code (GSC, updater, etc.)
+	 * is unaffected. Re-resolves the host immediately before the socket is
+	 * opened to narrow the DNS-rebinding window.
+	 *
+	 * @param false|array|WP_Error $preempt Passthrough sentinel.
+	 * @param array                $args    Parsed HTTP args.
+	 * @param string               $url     Target URL.
+	 * @return false|WP_Error              WP_Error to abort, false to continue.
+	 */
+	public static function pre_http_ssrf_guard( $preempt, $args, $url ) {
+		if ( empty( $args['cwp_ssrf_guard'] ) ) {
+			return $preempt;
+		}
+		if ( ! self::is_safe_webhook_url( $url ) ) {
+			return new WP_Error(
+				'ssrf_blocked',
+				__( 'Blocked webhook dispatch to a non-public address.', 'wp-mcp-connect' )
+			);
+		}
+		return $preempt;
+	}
+
+	/**
+	 * Context string used to derive the encryption key for the stored
+	 * webhook signing secret.
+	 *
+	 * @var string
+	 */
+	const SECRET_CONTEXT = 'cwp_webhook_signing_secret_v1';
+
+	/**
+	 * Get the HMAC signing secret for outbound webhooks.
+	 *
+	 * Prefers AUTH_KEY (never lands in the DB). If AUTH_KEY is missing or still
+	 * the WP placeholder, generates a 32-char random secret and stores it
+	 * encrypted in wp_options. Never returns the stored secret in cleartext —
+	 * it's always decrypted just-in-time here.
+	 *
+	 * @return string Signing secret, or '' if no secret can be established.
+	 */
+	private static function get_signing_secret() {
+		if ( defined( 'AUTH_KEY' ) && ! empty( AUTH_KEY ) && AUTH_KEY !== 'put your unique phrase here' ) {
+			return AUTH_KEY;
+		}
+
+		if ( ! class_exists( 'WP_MCP_Connect_Crypto' ) ) {
+			return '';
+		}
+
+		$stored = (string) get_option( 'cwp_webhook_secret', '' );
+		if ( '' !== $stored ) {
+			$decrypted = WP_MCP_Connect_Crypto::decrypt( $stored, self::SECRET_CONTEXT );
+			if ( is_string( $decrypted ) && '' !== $decrypted ) {
+				return $decrypted;
+			}
+			// Decryption failed — salt rotation or corruption. Fall through and
+			// generate a fresh secret below. Receivers will need to re-sync.
+		}
+
+		$plain     = wp_generate_password( 32, true, true );
+		$encrypted = WP_MCP_Connect_Crypto::encrypt( $plain, self::SECRET_CONTEXT );
+		if ( is_wp_error( $encrypted ) ) {
+			return '';
+		}
+		update_option( 'cwp_webhook_secret', $encrypted, false );
+
+		return $plain;
+	}
+
+	/**
+	 * Validate a webhook target URL against SSRF risks.
+	 *
+	 * Requires HTTPS, rejects loopback/private/reserved addresses both by name
+	 * and by resolved IP. A residual DNS-rebinding window remains between this
+	 * check and the connect-time resolve; HTTPS-only blocks the AWS/GCP IMDS
+	 * exfiltration case since those services don't serve TLS.
+	 *
+	 * @param string $url Candidate webhook URL.
+	 * @return bool True if the URL is safe to dispatch to.
+	 */
+	public static function is_safe_webhook_url( $url ) {
+		if ( '' === $url || ! is_string( $url ) ) {
+			return false;
+		}
+
+		$parts = wp_parse_url( $url );
+		if ( ! is_array( $parts ) || empty( $parts['scheme'] ) || empty( $parts['host'] ) ) {
+			return false;
+		}
+
+		if ( 'https' !== strtolower( $parts['scheme'] ) ) {
+			return false;
+		}
+
+		$host = strtolower( $parts['host'] );
+
+		$blocked_names = array( 'localhost', 'ip6-localhost', 'ip6-loopback' );
+		if ( in_array( $host, $blocked_names, true ) ) {
+			return false;
+		}
+
+		// If host is a bare IP (including IPv6 inside brackets wp_parse_url strips),
+		// validate it against public ranges directly.
+		if ( filter_var( $host, FILTER_VALIDATE_IP ) ) {
+			// IPv4-mapped IPv6 (::ffff:0:0/96) aliases an IPv4 address at the
+			// socket layer but PHP's FILTER_FLAG_NO_PRIV_RANGE/_NO_RES_RANGE
+			// only checks the IPv4 and pure-IPv6 private/reserved ranges, not
+			// the mapped space. `::ffff:7f00:1` == 127.0.0.1 but slips through
+			// without an explicit reject. Also reject the all-zeros address.
+			$lower = strtolower( $host );
+			if ( '::' === $lower || 0 === strpos( $lower, '::ffff:' ) ) {
+				return false;
+			}
+			return (bool) filter_var(
+				$host,
+				FILTER_VALIDATE_IP,
+				FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+			);
+		}
+
+		// Otherwise resolve the hostname and check every record. gethostbynamel
+		// returns false on failure; treat that as unsafe so DNS tricks can't
+		// pass a lookup that then fails to connect.
+		$resolved = gethostbynamel( $host );
+		if ( ! is_array( $resolved ) || empty( $resolved ) ) {
+			return false;
+		}
+
+		foreach ( $resolved as $ip ) {
+			if ( ! filter_var(
+				$ip,
+				FILTER_VALIDATE_IP,
+				FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+			) ) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	/**
@@ -167,16 +327,26 @@ class WP_MCP_Connect_Webhooks {
 	 * @return WP_REST_Response
 	 */
 	public function add_webhook( $request ) {
+		$url = esc_url_raw( $request->get_param( 'url' ) );
+
+		if ( ! self::is_safe_webhook_url( $url ) ) {
+			return new WP_Error(
+				'invalid_webhook_url',
+				__( 'Webhook URL must be an HTTPS URL pointing to a publicly routable host.', 'wp-mcp-connect' ),
+				array( 'status' => 400 )
+			);
+		}
+
 		$webhooks   = get_option( 'cwp_webhooks', array() );
 		$webhooks[] = array(
-			'url'     => esc_url_raw( $request->get_param( 'url' ) ),
+			'url'     => $url,
 			'events'  => $request->get_param( 'events' ),
 			'created' => gmdate( 'c' ),
 		);
 		update_option( 'cwp_webhooks', $webhooks );
 
 		if ( class_exists( 'WP_MCP_Connect_Audit_Log' ) ) {
-			WP_MCP_Connect_Audit_Log::log( 'webhook_added', 'Webhook added: ' . $request->get_param( 'url' ) );
+			WP_MCP_Connect_Audit_Log::log( 'webhook_added', 'Webhook added: ' . $url );
 		}
 
 		return rest_ensure_response( array( 'success' => true, 'webhooks' => $webhooks ) );

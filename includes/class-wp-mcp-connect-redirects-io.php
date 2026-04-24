@@ -69,6 +69,7 @@ class WP_MCP_Connect_Redirects_IO {
 				'redirects' => array(
 					'required'    => true,
 					'type'        => 'array',
+					'maxItems'    => self::MAX_IMPORT_ROWS,
 					'description' => 'Array of redirect objects to import',
 				),
 				'mode' => array(
@@ -81,6 +82,13 @@ class WP_MCP_Connect_Redirects_IO {
 			),
 		) );
 	}
+
+	/**
+	 * Hard cap on redirect rows accepted per import request. Protects against
+	 * unbounded wp_insert_post/update_post_meta loops and downstream option
+	 * bloat when the cache is rebuilt into cwp_redirect_rules.
+	 */
+	const MAX_IMPORT_ROWS = 5000;
 
 	/**
 	 * Check if user has permission to access import/export endpoints.
@@ -150,6 +158,13 @@ class WP_MCP_Connect_Redirects_IO {
 				__( 'No redirects provided for import.', 'wp-mcp-connect' ),
 				array( 'status' => 400 )
 			);
+		}
+
+		// Defence-in-depth cap: the REST schema enforces maxItems but a future
+		// refactor or filter could bypass that. A post-arrival slice keeps the
+		// invariant local.
+		if ( count( $redirects ) > self::MAX_IMPORT_ROWS ) {
+			$redirects = array_slice( $redirects, 0, self::MAX_IMPORT_ROWS );
 		}
 
 		$results = array(
@@ -259,6 +274,17 @@ class WP_MCP_Connect_Redirects_IO {
 			return new WP_Error(
 				'redirect_loop',
 				sprintf( __( 'Item %d: Redirect loop detected.', 'wp-mcp-connect' ), $index + 1 )
+			);
+		}
+
+		// Reject external destinations at write time. perform_redirect() also
+		// re-checks at serve time, but we don't want corrupt open-redirect
+		// rows sitting in the DB waiting for a future refactor to trust them.
+		if ( class_exists( 'WP_MCP_Connect_Redirects' ) &&
+			! WP_MCP_Connect_Redirects::is_internal_url( $to ) ) {
+			return new WP_Error(
+				'external_redirect_blocked',
+				sprintf( __( 'Item %d: Redirects to external URLs are not allowed.', 'wp-mcp-connect' ), $index + 1 )
 			);
 		}
 

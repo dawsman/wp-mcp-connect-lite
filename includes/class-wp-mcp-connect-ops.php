@@ -298,9 +298,14 @@ class WP_MCP_Connect_Ops {
 			wp_delete_post( $redirect_id, true );
 		}
 
-		// Restore from previous state.
+		// Restore from previous state — re-apply the internal-URL check in
+		// case the snapshot was taken when the check wasn't yet enforced.
 		foreach ( $previous_state as $redirect ) {
 			if ( empty( $redirect['from_url'] ) || empty( $redirect['to_url'] ) ) {
+				continue;
+			}
+			if ( class_exists( 'WP_MCP_Connect_Redirects' ) &&
+				! WP_MCP_Connect_Redirects::is_internal_url( $redirect['to_url'] ) ) {
 				continue;
 			}
 			$post_id = wp_insert_post( array(

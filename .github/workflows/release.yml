@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine version
+        id: version
+        run: |
+          FILE_VERSION=$(grep -E '^\s*\*\s*Version:' wp-mcp-connect.php | head -n1 | sed -E 's/.*Version:\s*([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+          echo "File version: $FILE_VERSION"
+
+          git fetch --tags
+
+          if git rev-parse "v$FILE_VERSION" >/dev/null 2>&1; then
+            echo "Tag v$FILE_VERSION exists — auto-bumping patch"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$FILE_VERSION"
+            HIGHEST=$(git tag -l "v${MAJOR}.${MINOR}.*" | sed 's/^v//' | sort -V | tail -n1)
+            if [ -n "$HIGHEST" ]; then
+              IFS='.' read -r _ _ HP <<< "$HIGHEST"
+              PATCH=$((HP + 1))
+            else
+              PATCH=$((PATCH + 1))
+            fi
+            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+
+            sed -i -E "s/^(\s*\*\s*Version:\s*).*/\1${VERSION}/" wp-mcp-connect.php
+            sed -i -E "s/(define\(\s*'WP_MCP_CONNECT_VERSION',\s*')[^']+('\s*\);)/\1${VERSION}\2/" wp-mcp-connect.php
+
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add wp-mcp-connect.php
+            git commit -m "chore: bump version to ${VERSION} [skip ci]"
+            git push origin main
+          else
+            VERSION="$FILE_VERSION"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Sync the manifest's version/download_url/last_updated before the build.
+      # build.sh requires plugin-header version and manifest version to match;
+      # this step makes that invariant hold after an auto-bump.
+      - name: Update manifest (version, download_url, last_updated)
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          DATE=$(date +%Y-%m-%d)
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/wp-mcp-connect-${VERSION}.zip"
+          jq --arg v "$VERSION" --arg d "$DOWNLOAD_URL" --arg date "$DATE" \
+            '.version = $v | .download_url = $d | .last_updated = $date' \
+            update-info.json > update-info.tmp && mv update-info.tmp update-info.json
+
+      # Delegate to build.sh so CI and local builds produce byte-identical ZIPs.
+      # build.sh also computes and injects zip_sha256 — required by the updater.
+      - name: Build plugin ZIP (via build.sh)
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Commit manifest and tag
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add update-info.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Update manifest for v${VERSION} [skip ci]"
+            git push origin main
+          fi
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          files: wp-mcp-connect-${{ steps.version.outputs.version }}.zip
+          generate_release_notes: true

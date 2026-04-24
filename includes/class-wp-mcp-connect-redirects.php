@@ -148,11 +148,14 @@ class WP_MCP_Connect_Redirects {
 	/**
 	 * Validate that a URL is internal to the site (prevents open redirects).
 	 *
+	 * Exposed as a public static helper so the import/export handler can
+	 * enforce the same check at write time without duplicating the logic.
+	 *
 	 * @since    1.0.0
 	 * @param    string    $url    The URL to validate.
 	 * @return   bool              True if internal, false if external.
 	 */
-	private function is_internal_url( $url ) {
+	public static function is_internal_url( $url ) {
 		// Allow relative paths.
 		if ( strpos( $url, '/' ) === 0 && strpos( $url, '//' ) !== 0 ) {
 			return true;
@@ -199,7 +202,7 @@ class WP_MCP_Connect_Redirects {
 			$sanitized = esc_url_raw( $value );
 
 			// Prevent open redirects by validating the URL is internal.
-			if ( ! $this->is_internal_url( $sanitized ) ) {
+			if ( ! self::is_internal_url( $sanitized ) ) {
 				return new WP_Error(
 					'external_redirect_blocked',
 					__( 'Redirects to external URLs are not allowed for security. Use an internal path or URL on this domain.', 'wp-mcp-connect' ),
@@ -343,7 +346,7 @@ class WP_MCP_Connect_Redirects {
 				? intval( $rule['code'] ) 
 				: 301;
 			$target_url = esc_url_raw( $rule['to'] );
-			if ( ! $this->is_internal_url( $target_url ) ) {
+			if ( ! self::is_internal_url( $target_url ) ) {
 				return;
 			}
 			wp_safe_redirect( $target_url, $status_code );

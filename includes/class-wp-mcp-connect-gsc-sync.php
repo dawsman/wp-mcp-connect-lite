@@ -594,6 +594,20 @@ class WP_MCP_Connect_GSC_Sync {
 			);
 		}
 
+		// Only allow inspection of URLs belonging to this WordPress site.
+		// GSC's URL Inspection API returns meaningful results only for URLs
+		// under the verified site property, so there's no legitimate reason
+		// to accept off-site URLs here.
+		$site_host    = strtolower( (string) wp_parse_url( home_url(), PHP_URL_HOST ) );
+		$inspect_host = strtolower( (string) wp_parse_url( $url, PHP_URL_HOST ) );
+		if ( '' === $inspect_host || $inspect_host !== $site_host ) {
+			return new WP_Error(
+				'invalid_url',
+				__( 'Inspected URL must belong to this site.', 'wp-mcp-connect' ),
+				array( 'status' => 400 )
+			);
+		}
+
 		$response = $this->api->inspect_url( $site_url, $url );
 
 		if ( is_wp_error( $response ) ) {
@@ -754,8 +768,16 @@ class WP_MCP_Connect_GSC_Sync {
 	 * @return   void
 	 */
 	public function schedule_sync() {
-		$enabled = get_option( 'cwp_gsc_sync_enabled', false );
+		$enabled   = get_option( 'cwp_gsc_sync_enabled', false );
 		$frequency = get_option( 'cwp_gsc_sync_frequency', 'daily' );
+
+		// Guard against a poisoned or typo'd option pointing at a short-interval
+		// schedule (e.g. 'every_minute' registered by another plugin) which
+		// would hammer Google's API quota.
+		$allowed_frequencies = array( 'hourly', 'twicedaily', 'daily', 'weekly' );
+		if ( ! in_array( $frequency, $allowed_frequencies, true ) ) {
+			$frequency = 'daily';
+		}
 
 		// Clear existing schedule.
 		$this->unschedule_sync();

@@ -53,5 +53,73 @@ foreach ( $task_posts as $post_id ) {
 }
 
 // Drop custom tables.
-$wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}cwp_404_log" );
-$wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}cwp_ops_log" );
+$cwp_tables = array(
+	'cwp_404_log',
+	'cwp_ops_log',
+	'cwp_api_log',
+	'cwp_audit_log',
+	'cwp_topology',
+	'cwp_gsc_data',
+	'cwp_gsc_queries',
+	'cwp_gsc_sync_log',
+	'cwp_gsc_data_snapshots',
+	'cwp_gsc_query_snapshots',
+	'cwp_gsc_ctr_curve',
+);
+foreach ( $cwp_tables as $cwp_table ) {
+	$wpdb->query( "DROP TABLE IF EXISTS `{$wpdb->prefix}{$cwp_table}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+}
+
+// Remove remaining plugin options — especially anything holding secrets.
+$cwp_options = array(
+	// Google Search Console OAuth + sync state.
+	'cwp_gsc_access_token',
+	'cwp_gsc_refresh_token',
+	'cwp_gsc_token_expiry',
+	'cwp_gsc_site_url',
+	'cwp_gsc_sync_enabled',
+	'cwp_gsc_sync_frequency',
+	'cwp_gsc_data_retention_days',
+	'cwp_gsc_last_sync',
+	// Webhooks (secret is HMAC key material).
+	'cwp_webhook_secret',
+	'cwp_webhooks',
+	// Logging, versioning, general settings.
+	'cwp_enable_logging',
+	'cwp_plugin_version',
+	'cwp_audit_log_db_version',
+	'cwp_rate_limit',
+	'cwp_rate_limit_window',
+	'cwp_ip_whitelist',
+	'cwp_ip_blacklist',
+	'cwp_trusted_proxies',
+	'cwp_reports_recipients',
+	'cwp_automation_rules',
+	'cwp_api_last_access',
+);
+foreach ( $cwp_options as $cwp_option ) {
+	delete_option( $cwp_option );
+}
+
+// Remove custom capability granted to administrator role during activation.
+$cwp_admin_role = get_role( 'administrator' );
+if ( $cwp_admin_role instanceof WP_Role ) {
+	$cwp_admin_role->remove_cap( 'manage_cwp_redirects' );
+}
+
+// Unschedule all plugin cron events.
+$cwp_cron_hooks = array(
+	'cwp_task_refresh_event',
+	'cwp_weekly_report_event',
+	'cwp_404_cleanup_event',
+	'cwp_gsc_sync_cron',
+	'cwp_evaluate_rules',
+	'cwp_refresh_tasks',
+);
+foreach ( $cwp_cron_hooks as $cwp_cron_hook ) {
+	$cwp_ts = wp_next_scheduled( $cwp_cron_hook );
+	if ( $cwp_ts ) {
+		wp_unschedule_event( $cwp_ts, $cwp_cron_hook );
+	}
+	wp_clear_scheduled_hook( $cwp_cron_hook );
+}

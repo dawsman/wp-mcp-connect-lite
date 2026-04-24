@@ -148,35 +148,50 @@ class WP_MCP_Connect_Auth {
 	 * @return   string    The client IP address.
 	 */
 	public static function get_client_ip() {
+		$remote_addr = isset( $_SERVER['REMOTE_ADDR'] )
+			? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) )
+			: '';
+
 		$trusted_proxies = get_option( 'cwp_trusted_proxies', '' );
+		if ( empty( $trusted_proxies ) ) {
+			return $remote_addr;
+		}
 
-		if ( ! empty( $trusted_proxies ) ) {
-			$remote_addr = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : '';
-			$proxy_list = array_map( 'trim', explode( ',', $trusted_proxies ) );
+		$proxy_list = array_values( array_filter( array_map( 'trim', explode( ',', $trusted_proxies ) ) ) );
+		if ( ! in_array( $remote_addr, $proxy_list, true ) ) {
+			// Request didn't arrive via a trusted proxy — forwarded headers are
+			// client-controlled and must not be honoured.
+			return $remote_addr;
+		}
 
-			if ( in_array( $remote_addr, $proxy_list, true ) ) {
-				$forwarded_headers = array(
-					'HTTP_CF_CONNECTING_IP',
-					'HTTP_X_FORWARDED_FOR',
-					'HTTP_X_REAL_IP',
-				);
-
-				foreach ( $forwarded_headers as $header ) {
-					if ( ! empty( $_SERVER[ $header ] ) ) {
-						$ip = sanitize_text_field( wp_unslash( $_SERVER[ $header ] ) );
-						if ( strpos( $ip, ',' ) !== false ) {
-							$ips = explode( ',', $ip );
-							$ip = trim( $ips[0] );
-						}
-						if ( filter_var( $ip, FILTER_VALIDATE_IP ) ) {
-							return $ip;
-						}
-					}
+		// X-Forwarded-For is a comma-separated chain of the form
+		// "client, proxy1, proxy2". The leftmost entry is attacker-controlled.
+		// Walk from the right — the last entry was written by the nearest proxy
+		// (REMOTE_ADDR), the one before it is what that proxy observed, etc.
+		// The first IP that is *not* one of our trusted proxies is the real client.
+		//
+		// We intentionally do NOT consult single-value headers like
+		// CF-Connecting-IP or X-Real-IP here: they're attacker-settable upstream
+		// of any non-Cloudflare / non-NGINX proxy in the trusted list, so once
+		// a site admin lists a generic proxy they'd inadvertently trust those
+		// headers too. XFF's proxy-aware right-walk is the only reliable source.
+		if ( ! empty( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ) {
+			$chain = array_map(
+				'trim',
+				explode( ',', sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ) )
+			);
+			foreach ( array_reverse( $chain ) as $candidate ) {
+				if ( ! filter_var( $candidate, FILTER_VALIDATE_IP ) ) {
+					continue;
 				}
+				if ( in_array( $candidate, $proxy_list, true ) ) {
+					continue;
+				}
+				return $candidate;
 			}
 		}
 
-		return isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : '';
+		return $remote_addr;
 	}
 
 	/**

@@ -105,7 +105,7 @@ class WP_MCP_Connect_Tasks {
 			array(
 				'methods'             => 'POST',
 				'callback'            => array( $this, 'create_task' ),
-				'permission_callback' => array( $this, 'check_permission' ),
+				'permission_callback' => array( $this, 'check_write_permission' ),
 				'args'                => array(
 					'title'    => array( 'type' => 'string' ),
 					'status'   => array( 'type' => 'string' ),
@@ -121,7 +121,7 @@ class WP_MCP_Connect_Tasks {
 			array(
 				'methods'             => 'PATCH',
 				'callback'            => array( $this, 'update_task' ),
-				'permission_callback' => array( $this, 'check_permission' ),
+				'permission_callback' => array( $this, 'check_write_permission' ),
 				'args'                => array(
 					'id'       => array( 'required' => true, 'type' => 'integer' ),
 					'status'   => array( 'type' => 'string' ),
@@ -135,7 +135,7 @@ class WP_MCP_Connect_Tasks {
 		register_rest_route( 'mcp/v1', '/tasks/bulk', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'bulk_update_tasks' ),
-			'permission_callback' => array( $this, 'check_permission' ),
+			'permission_callback' => array( $this, 'check_write_permission' ),
 			'args'                => array(
 				'ids'    => array( 'required' => true, 'type' => 'array' ),
 				'action' => array( 'required' => true, 'type' => 'string' ),
@@ -152,7 +152,7 @@ class WP_MCP_Connect_Tasks {
 		register_rest_route( 'mcp/v1', '/tasks/refresh', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'refresh_tasks' ),
-			'permission_callback' => array( $this, 'check_permission' ),
+			'permission_callback' => array( $this, 'check_write_permission' ),
 			'args'                => array(
 				'mode' => array( 'type' => 'string', 'default' => 'merge' ),
 			),
@@ -160,7 +160,7 @@ class WP_MCP_Connect_Tasks {
 	}
 
 	/**
-	 * Check permissions.
+	 * Check read permissions (list/export).
 	 *
 	 * @since 1.0.0
 	 * @return bool
@@ -168,6 +168,24 @@ class WP_MCP_Connect_Tasks {
 	public function check_permission() {
 		return current_user_can( 'edit_posts' );
 	}
+
+	/**
+	 * Check write permissions (create/update/bulk/refresh).
+	 *
+	 * Writes include bulk-delete and cron-refresh triggers, which affect
+	 * tasks created by any user and should be restricted to site admins.
+	 *
+	 * @since 1.0.1
+	 * @return bool
+	 */
+	public function check_write_permission() {
+		return current_user_can( 'manage_options' );
+	}
+
+	/**
+	 * Maximum length (bytes) of the JSON-encoded task `metadata` blob.
+	 */
+	const MAX_METADATA_BYTES = 10000;
 
 	/**
 	 * List tasks.
@@ -496,7 +514,13 @@ class WP_MCP_Connect_Tasks {
 			update_post_meta( $task_id, '_cwp_task_source', sanitize_text_field( (string) $source ) );
 		}
 		if ( null !== $metadata ) {
-			update_post_meta( $task_id, '_cwp_task_metadata', wp_json_encode( $metadata ) );
+			$encoded = wp_json_encode( $metadata );
+			if ( is_string( $encoded ) && strlen( $encoded ) <= self::MAX_METADATA_BYTES ) {
+				update_post_meta( $task_id, '_cwp_task_metadata', $encoded );
+			}
+			// If the blob is oversized, silently skip the metadata write rather
+			// than error — callers continue to get their task with core fields
+			// set, but the oversized payload is dropped to protect postmeta.
 		}
 	}
 
@@ -762,9 +786,39 @@ class WP_MCP_Connect_Tasks {
 		update_post_meta( $post_id_inserted, '_cwp_task_post_id', (int) $post_id );
 		update_post_meta( $post_id_inserted, '_cwp_task_url', esc_url_raw( $url ) );
 		update_post_meta( $post_id_inserted, '_cwp_task_source', sanitize_text_field( $source ) );
-		update_post_meta( $post_id_inserted, '_cwp_task_metadata', wp_json_encode( $metadata ) );
+		// Cron callers can reach this path with attacker-influenced values
+		// originating from post content (image srcs, anchor hrefs, etc.).
+		// Sanitise recursively before encoding so rendered metadata in any
+		// admin view can't carry script content.
+		$encoded_meta = wp_json_encode( self::sanitize_metadata( $metadata ) );
+		if ( is_string( $encoded_meta ) && strlen( $encoded_meta ) <= self::MAX_METADATA_BYTES ) {
+			update_post_meta( $post_id_inserted, '_cwp_task_metadata', $encoded_meta );
+		}
 		update_post_meta( $post_id_inserted, '_cwp_task_fingerprint', $fingerprint );
 
 		return 1;
+	}
+
+	/**
+	 * Recursively sanitise a metadata value tree for safe storage + rendering.
+	 *
+	 * @param mixed $value
+	 * @return mixed
+	 */
+	private static function sanitize_metadata( $value ) {
+		if ( is_array( $value ) ) {
+			$out = array();
+			foreach ( $value as $k => $v ) {
+				$out[ is_string( $k ) ? sanitize_key( $k ) : $k ] = self::sanitize_metadata( $v );
+			}
+			return $out;
+		}
+		if ( is_string( $value ) ) {
+			return sanitize_text_field( $value );
+		}
+		if ( is_bool( $value ) || is_int( $value ) || is_float( $value ) || null === $value ) {
+			return $value;
+		}
+		return (string) $value;
 	}
 }

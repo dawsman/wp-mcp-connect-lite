@@ -681,8 +681,12 @@ class WP_MCP_Connect_Content {
 
 		$unique_filename = wp_unique_filename( $upload_dir['path'], $filename );
 		$file_path       = $upload_dir['path'] . '/' . $unique_filename;
+		// Stage the write to a temporary sibling. This way a valid-looking
+		// image never exists at the final public path unless both the
+		// magic-byte check and wp_check_filetype_and_ext agree on the type.
+		$tmp_path        = $file_path . '.tmp';
 
-		$result = file_put_contents( $file_path, $decoded );
+		$result = file_put_contents( $tmp_path, $decoded );
 
 		if ( false === $result ) {
 			return new WP_Error(
@@ -692,14 +696,24 @@ class WP_MCP_Connect_Content {
 			);
 		}
 
-		// Verify the file again after saving using WordPress functions.
-		$file_type = wp_check_filetype_and_ext( $file_path, $unique_filename );
+		// Verify the staged file using WordPress functions before promoting it
+		// to the final path.
+		$file_type = wp_check_filetype_and_ext( $tmp_path, $unique_filename );
 		if ( empty( $file_type['type'] ) || ! in_array( $file_type['type'], $this->allowed_image_types, true ) ) {
-			wp_delete_file( $file_path );
+			wp_delete_file( $tmp_path );
 			return new WP_Error(
 				'file_type_mismatch',
 				__( 'File validation failed. The file may not be a valid image.', 'wp-mcp-connect' ),
 				array( 'status' => 400 )
+			);
+		}
+
+		if ( ! @rename( $tmp_path, $file_path ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			wp_delete_file( $tmp_path );
+			return new WP_Error(
+				'upload_failed',
+				__( 'Failed to promote uploaded file.', 'wp-mcp-connect' ),
+				array( 'status' => 500 )
 			);
 		}
 

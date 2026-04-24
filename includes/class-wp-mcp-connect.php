@@ -10,7 +10,7 @@ defined( 'ABSPATH' ) || exit;
 /**
  * The core plugin class.
  *
- * This is used to define internationalization, admin-specific hooks,
+ * This is used to define internationalization, database migrations,
  * and public-facing site hooks.
  *
  * @since      1.0.0
@@ -116,15 +116,6 @@ class WP_MCP_Connect {
 	 * @var      WP_MCP_Connect_Content    $content    Content creation handler.
 	 */
 	protected $content;
-
-	/**
-	 * Admin handler instance.
-	 *
-	 * @since    1.0.0
-	 * @access   protected
-	 * @var      WP_MCP_Connect_Admin    $admin    Admin functionality handler.
-	 */
-	protected $admin;
 
 	/**
 	 * Logger handler instance.
@@ -304,6 +295,7 @@ class WP_MCP_Connect {
 	 */
 	private function load_dependencies() {
 		require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-loader.php';
+		require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-crypto.php';
 		require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-auth.php';
 		require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-meta-suggest.php';
 		require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-seo-plugins.php';
@@ -315,7 +307,6 @@ class WP_MCP_Connect {
 		require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-media.php';
 		require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-content-audit.php';
 		require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-content.php';
-		require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-admin.php';
 		require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-logger.php';
 		require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-settings.php';
 		require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-media-extended.php';
@@ -339,6 +330,7 @@ class WP_MCP_Connect {
 		require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-cannibalization.php';
 		require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-webhooks.php';
 		require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-rules.php';
+		require_once WP_MCP_CONNECT_PATH . 'includes/class-wp-mcp-connect-admin-lite.php';
 	}
 
 	/**
@@ -359,7 +351,6 @@ class WP_MCP_Connect {
 		$this->media          = new WP_MCP_Connect_Media( $this->get_plugin_name(), $this->get_version() );
 		$this->content_audit  = new WP_MCP_Connect_Content_Audit( $this->get_plugin_name(), $this->get_version() );
 		$this->content        = new WP_MCP_Connect_Content( $this->get_plugin_name(), $this->get_version(), $this->logger );
-		$this->admin          = new WP_MCP_Connect_Admin( $this->get_plugin_name(), $this->get_version() );
 		$this->settings       = new WP_MCP_Connect_Settings( $this->get_plugin_name(), $this->get_version() );
 		$this->media_extended = new WP_MCP_Connect_Media_Extended( $this->get_plugin_name(), $this->get_version() );
 		$this->links          = new WP_MCP_Connect_Links( $this->get_plugin_name(), $this->get_version() );
@@ -386,13 +377,17 @@ class WP_MCP_Connect {
 	 * @return   void
 	 */
 	private function define_admin_hooks() {
-		$this->loader->add_action( 'admin_menu', $this->admin, 'register_admin_menu' );
-		$this->loader->add_action( 'admin_enqueue_scripts', $this->admin, 'enqueue_admin_assets' );
-		$this->loader->add_filter( 'plugin_action_links_' . WP_MCP_CONNECT_BASENAME, $this->admin, 'add_plugin_action_links' );
-		$this->loader->add_action( 'admin_init', $this->log_404, 'maybe_create_table' );
-		$this->loader->add_action( 'admin_init', $this->ops, 'maybe_create_table' );
-		$this->loader->add_action( 'admin_init', $this->topology, 'maybe_create_table' );
-		$this->loader->add_action( 'admin_init', $this->audit_log, 'maybe_create_table' );
+		$installed = get_option( 'cwp_plugin_version', '0' );
+		if ( version_compare( $installed, WP_MCP_CONNECT_VERSION, '<' ) ) {
+			$this->log_404->maybe_create_table();
+			$this->ops->maybe_create_table();
+			$this->topology->maybe_create_table();
+			$this->audit_log->maybe_create_table();
+			update_option( 'cwp_plugin_version', WP_MCP_CONNECT_VERSION );
+		}
+
+		$admin_lite = new WP_MCP_Connect_Admin_Lite();
+		$this->loader->add_action( 'admin_menu', $admin_lite, 'register_admin_menu' );
 	}
 
 	/**
