@@ -15,3 +15,29 @@ tests/wordpress-tests-lib/
 
 # Build artifacts produced by build.sh / the release workflow.
 wp-mcp-connect-*.zip
+
+# IDE / editor artifacts.
+.idea
+.vscode
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# Backup / merge artifacts.
+*.bak
+*.orig
+*.rej
+
+# PHP toolchain.
+.phpcs-cache
+phpcs-cache.json
+composer.phar
+
+# WordPress local-install landmines (must never end up in a plugin repo).
+wp-config.php
+.htaccess
+
+# Claude Code / agent workspace.
+.claude
