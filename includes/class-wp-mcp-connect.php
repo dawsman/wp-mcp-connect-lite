@@ -387,7 +387,10 @@ class WP_MCP_Connect {
 		}
 
 		$admin_lite = new WP_MCP_Connect_Admin_Lite();
-		$this->loader->add_action( 'admin_menu', $admin_lite, 'register_admin_menu' );
+		$this->loader->add_action( 'admin_menu',                    $admin_lite, 'register_admin_menu' );
+		$this->loader->add_action( 'admin_init',                    $admin_lite, 'maybe_handle_gsc_callback' );
+		$this->loader->add_action( 'admin_post_cwp_gsc_connect',    $admin_lite, 'handle_gsc_connect' );
+		$this->loader->add_action( 'admin_post_cwp_gsc_disconnect', $admin_lite, 'handle_gsc_disconnect' );
 	}
 
 	/**
