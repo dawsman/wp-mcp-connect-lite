@@ -26,7 +26,7 @@ define( 'WP_MCP_CONNECT_MIN_PHP_VERSION', '7.4' );
 define( 'WP_MCP_CONNECT_PATH', plugin_dir_path( __FILE__ ) );
 define( 'WP_MCP_CONNECT_URL', plugin_dir_url( __FILE__ ) );
 define( 'WP_MCP_CONNECT_BASENAME', plugin_basename( __FILE__ ) );
-define( 'WP_MCP_CONNECT_UPDATE_URL', 'https://raw.githubusercontent.com/dawsman/wp-mcp-connect-lite/main/update-info.json' );
+define( 'WP_MCP_CONNECT_UPDATE_URL', 'https://raw.githubusercontent.com/dawsman/wp-mcp-connector-lite/main/update-info.json' );
 
 /**
  * Check PHP version compatibility.
